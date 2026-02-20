@@ -1,358 +1,524 @@
-# Production RAG
+# 🚀 Python RAG Service
 
-Ask questions across **1,000,000+ document chunks**.
-On a **1 GB RAM** server.
-With **no GPU**.
+Retrieval-Augmented Generation for large document collections on **1 GB RAM** with **no GPU**.
 
-And still get accurate, source-cited answers.
+Combines **Lucene** (keyword search) + **Qdrant** (semantic search) + **Claude** (answer generation) for accurate, cited answers.
 
 ---
 
-Most RAG systems assume you have GPUs and memory to burn.
-
-This one assumes you don't.
-
-It's a retrieval-augmented generation pipeline built to run under real-world infrastructure constraints — the kind where every megabyte matters and there's no room for bloated vector indexes.
+## 📋 Quick Overview
 
 ```
 User Question
-      │
-      ▼
-  Lucene       1M+ chunks  →  1,000 candidates     (keyword, fast)
-      │
-      ▼
-  Qdrant       1,000 candidates  →  10 best         (semantic, accurate)
-      │
-      ▼
-  Claude       10 chunks  →  1 cited answer          (grounded, no hallucination)
-      │
-      ▼
-  { answer + sources }
+     │
+     ▼
+Lucene Service (Java)     → Top 1,000 keyword matches (fast)
+     │
+     ▼
+Qdrant (Vector DB)        → Top 10 semantic matches (accurate)
+     │
+     ▼
+Python RAG Service        → Build prompt + call Claude
+     │
+     ▼
+Answer with Sources       → "According to doc_xyz.pdf, page 5..."
 ```
 
-> Full technical reference — APIs, data formats, Qdrant internals, deployment — in **[TECHNICAL.md](TECHNICAL.md)**
+---
+
+## 📁 Directory Structure
+
+```
+Python_RAG_Service/
+├── ingestion-rag-pipeline.ipynb     ⭐ Embed chunks & store in Qdrant
+├── run_ingestion.py                 Command-line ingestion runner
+├── run_ingestion_cloud.py           Google Colab optimized version
+├── requirements.txt                 Python dependencies
+├── app/                             FastAPI service code
+│   ├── main.py                      Query API endpoints
+│   ├── retriever.py                 Embed queries & search Qdrant
+│   ├── generator.py                 Claude answer generation
+│   ├── qdrant_store.py              Vector DB operations
+│   ├── embedding.py                 BGE embedding model
+│   └── config.py                    Configuration from .env
+├── .env                             Your API keys (git-ignored)
+├── .env.example                     Template for .env
+├── .env.prod                        Production config
+├── README.md                        (this file)
+└── TECHNICAL.md                     Deep technical reference
+```
 
 ---
 
-## Who Is This For?
+## 🎯 What This Service Does
 
-This project is for you if:
+**Three-stage RAG pipeline**:
 
-- You need RAG on **cheap infrastructure** — not a $200/month GPU server
-- You care about **citations and grounding** — every answer traces back to a source page
-- You want to understand how **large-scale retrieval works under constraints**
-- You're building search over **research papers, legal documents, manuals, or reports**
+1. **Lucene** (Java) - Fast keyword search
+   - Scans 1M+ chunks instantly
+   - Returns top 1,000 candidates via BM25 scoring
+   - Takes ~15 ms
 
-If you want maximum throughput on big hardware — this isn't that.
+2. **Qdrant** (Vector DB) - Semantic reranking
+   - Embeds query using BAAI/bge-small-en
+   - Searches ONLY the 1,000 candidates (brute-force)
+   - Returns top 10 most relevant chunks
+   - Takes ~20 ms
 
-If you want smart engineering under real limits — keep reading.
+3. **Claude** (LLM) - Answer generation
+   - Reads the 10 best chunks
+   - Generates grounded, cited answer
+   - References source PDF + page number
+   - Takes 1-3 seconds
+
+**Total latency** (excluding LLM): < 50 ms
+**Total latency** (with Claude): 1-3 seconds
 
 ---
 
-## Example
+## 🔧 Setup & Installation
 
-**Question:**
+### **Step 1: Install Dependencies**
 
-> *"What are the limitations of transformer models?"*
+```bash
+cd Python_RAG_Service
 
-**Response:**
+# Install CPU-only PyTorch (important!)
+pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
-```json
+# Install remaining dependencies
+pip install -r requirements.txt
+```
+
+**Why CPU-only PyTorch?**
+- CPU build: 115 MB
+- CUDA build: 2+ GB
+- For a 1 GB server, CPU build is mandatory
+
+### **Step 2: Configure Environment**
+
+```bash
+# Copy template
+cp .env.example .env
+
+# Edit .env
+nano .env  # or your editor
+```
+
+**Required settings**:
+```
+LLM_API_KEY=sk-ant-xxxxxxx          # Your Claude API key
+QDRANT_URL=http://localhost:6333    # Local Qdrant or cloud
+QDRANT_API_KEY=                     # Empty for local, required for cloud
+LUCENE_URL=http://localhost:8080    # Java service URL
+```
+
+### **Step 3: Start Qdrant** (if local)
+
+```bash
+docker run -d \
+  --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  qdrant/qdrant:latest
+```
+
+### **Step 4: Start Lucene Service** (separate terminal)
+
+```bash
+cd lucene-service
+mvn spring-boot:run
+```
+
+---
+
+## 📥 Ingestion Pipeline
+
+Two options to populate Qdrant with embeddings:
+
+### **Option A: Google Colab (Recommended for Large Datasets)**
+
+Use the Jupyter notebook with free T4 GPU:
+
+```bash
+# Upload to Colab
+# Open: ingestion-rag-pipeline.ipynb
+
+# Or use direct Python runner
+python run_ingestion_cloud.py
+```
+
+**What it does**:
+1. Loads JSON chunks from `lucene-service/chunk-exports/`
+2. Embeds in batches of 256 on GPU
+3. Upserts to Qdrant Cloud in batches of 1000
+4. **Speed**: ~99 MB in 2-5 minutes
+
+**Key features**:
+- ✅ Text sanitization (removes control characters)
+- ✅ Error handling (pinpoints problematic chunks)
+- ✅ Memory cleanup (GC after each batch)
+- ✅ Progress bar (live status)
+
+### **Option B: Command Line (Local)**
+
+```bash
+# One-time ingestion of all chunks
+python run_ingestion.py
+
+# Or from the notebook
+python -m jupyter nbconvert --to script ingestion-rag-pipeline.ipynb
+python ingestion_rag_pipeline.py
+```
+
+---
+
+## 🚀 Running the Service
+
+### **Start the Query Server**
+
+```bash
+# Development (auto-reload)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Production
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+### **Test the API**
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Example query (requires candidate IDs from Lucene)
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are transformers?",
+    "candidate_ids": ["chunk_001", "chunk_002", "chunk_003"]
+  }'
+
+# Response:
 {
-  "answer": "According to the provided documents, transformer models face several
-    key limitations. Their attention mechanism has quadratic complexity with respect
-    to sequence length, making them computationally expensive for long documents
-    (2601.16344v1.pdf, page 5). They also require large amounts of training data
-    and struggle with hallucination when data is insufficient
-    (2601.15953v1.pdf, page 12).",
+  "answer": "According to the documents, transformers are...",
   "sources": [
     {
       "source": "2601.16344v1.pdf",
-      "title": "DSGym: A Holistic Framework",
+      "title": "DSGym Framework",
       "page_number": 5,
-      "score": 0.8734
-    },
-    {
-      "source": "2601.15953v1.pdf",
-      "title": "Scaling Laws for Neural Architectures",
-      "page_number": 12,
-      "score": 0.8156
+      "score": 0.873
     }
-  ]
+  ],
+  "query_embedding_time_ms": 8,
+  "search_time_ms": 18,
+  "total_time_ms": 42
 }
 ```
 
-Every claim is backed by a filename and page number. If the answer isn't in the documents, the system says so — it doesn't guess.
-
 ---
 
-## How It Works
-
-The core idea:
-
-> **Cheap filter first. Expensive reasoning later.**
->
-> Never do expensive work on a huge dataset if you can shrink it first.
-
-The system is two services working together:
-
-### Stage 1 — The Document Engine (Java + Lucene)
-
-You upload PDFs. The service extracts text, splits it into overlapping chunks (~400 tokens each, aligned to sentence boundaries), and indexes everything with Apache Lucene.
-
-When a question comes in, Lucene uses BM25 keyword scoring to scan the **entire** collection and pull out the **top 1,000 most relevant chunk IDs**. This takes milliseconds — even over a million chunks — because that's exactly what inverted indexes are built for.
-
-Think of it like a librarian who instantly pulls 1,000 possibly-relevant books from the shelves. Fast, but imprecise — she's matching words, not understanding meaning.
-
-### Stage 2 — The Intelligence Layer (Python + Qdrant)
-
-The Python service receives those 1,000 candidate IDs and a question. It:
-
-1. **Embeds the question** into a 384-dimensional vector using `BAAI/bge-small-en`
-2. **Searches Qdrant** — but only within those 1,000 candidates, using brute-force cosine similarity
-3. **Picks the top 10** chunks that are most semantically relevant
-4. **Builds a prompt** from those 10 chunks — with source filenames, titles, and page numbers
-5. **Calls Claude** to generate a grounded, cited answer
-
-Think of it like actually reading those 1,000 books and finding the 10 that truly answer your question. Slower, but it understands that "shortcomings of deep learning architectures" means the same as "neural network limitations" — even though the words are completely different.
-
-### Stage 3 — The Answer
-
-Claude reads the 10 best chunks and writes a clear answer. It's instructed to:
-- Answer **only** from the provided context
-- **Cite sources** with filenames and page numbers
-- Say "Not found in provided documents" rather than hallucinate
-
-The magic is in the combination. Neither service alone works under our constraints. Together, they turn 1M+ chunks into 10 precise answers on a server with 1 GB of RAM.
-
----
-
-## Performance Snapshot
+## 📊 Performance Specs
 
 | Metric | Value |
 |--------|-------|
-| Chunks indexed | 1,000,000+ |
-| Lucene keyword search | ~15 ms |
-| Qdrant semantic rerank (1,000 vectors) | ~20 ms |
-| Query embedding (CPU) | ~8 ms |
-| Total latency (excluding LLM) | < 50 ms |
-| RAM at query time | ~235 MB |
-| Embedding model size | ~130 MB on disk |
-| PyTorch CPU build | ~115 MB (vs ~2 GB for CUDA) |
-
-These numbers are from real runs on commodity hardware. The LLM call (Claude API) adds 1–3 seconds depending on response length — that's the bottleneck, not the retrieval.
+| **Chunks indexed** | 1M+ |
+| **Query embedding (CPU)** | ~8 ms |
+| **Qdrant semantic search** | ~20 ms |
+| **Total retrieval** | < 50 ms |
+| **Claude answer generation** | 1-3 sec |
+| **RAM usage at query time** | ~235 MB |
+| **Model size on disk** | ~130 MB |
+| **PyTorch build** | 115 MB (CPU) |
 
 ---
 
-## Architecture
+## 📚 Ingestion Pipeline Breakdown
 
-```
-                         OFFLINE (your local machine)
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                                                                  │
-  │   PDFs ──► Java/Lucene Service ──► chunk-exports/*.json          │
-  │                                          │                       │
-  │                                          ▼                       │
-  │                                   run_ingestion.py               │
-  │                                   (embed + store vectors)        │
-  │                                          │                       │
-  │                                          ▼                       │
-  │                                   Qdrant (populated)             │
-  │                                                                  │
-  └──────────────────────────────────────────────────────────────────┘
+### **ingestion-rag-pipeline.ipynb**
 
-                        RUNTIME (deployed server, 1 GB RAM)
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                                                                  │
-  │   User Question                                                  │
-  │        │                                                         │
-  │        ▼                                                         │
-  │   Java/Lucene ──► top 1000 candidate IDs                         │
-  │                          │                                       │
-  │                          ▼                                       │
-  │                   Python/FastAPI                                  │
-  │                     ├── embed query                               │
-  │                     ├── search Qdrant (only those 1000)           │
-  │                     ├── pick top 10                               │
-  │                     ├── build prompt with citations               │
-  │                     ├── call Claude                               │
-  │                     └── return answer + sources                   │
-  │                                                                  │
-  └──────────────────────────────────────────────────────────────────┘
-```
+The main notebook for embedding and storing chunks:
 
-**Why offline ingestion?** Embedding hundreds of thousands of chunks is CPU-heavy. The 1 GB server can't handle it. So we do it locally and push vectors to Qdrant ahead of time. The deployed server only ever embeds one query at a time — trivial.
+**Step-by-step**:
+1. **Install dependencies** - torch, sentence-transformers, qdrant-client
+2. **Configuration** - Set Qdrant URL, API key, model name
+3. **Upload JSON files** - From Lucene service exports
+4. **Load embedding model** - BAAI/bge-small-en (384 dim)
+5. **Create Qdrant collection** - HNSW disabled, brute-force only
+6. **Sanitize text** - Remove control characters that break tokenizers
+7. **Embed in batches** - 256 texts at a time on GPU
+8. **Upsert to Qdrant** - 1000 points per batch
+9. **Verify** - Check point count and sample payload
+10. **Test search** - Run a quick similarity search
 
----
+**Key features**:
+- ✅ Works on Colab T4 GPU (~2-5 min for 44K chunks)
+- ✅ Works on CPU (~30-60 min for 44K chunks)
+- ✅ Handles large files (streaming, batch processing)
+- ✅ Sanitizes text (removes NUL bytes, control chars)
+- ✅ Detailed error messages (tells you exactly which text failed)
+- ✅ Memory cleanup (GC + CUDA cache clearing)
 
-## Design Philosophy
-
-This project optimizes for:
-
-- **Simplicity** over novelty
-- **Deterministic behavior** over magic
-- **Explainability** over black-box pipelines
-- **Cheap infrastructure** over impressive demos
-- **Correctness** over speed
-
-Every design choice follows from the constraints. We didn't disable HNSW because we wanted to — we disabled it because 1 GB of RAM demanded it. And then we found that with Lucene pre-filtering, we didn't need it anyway.
-
----
-
-## Why These Decisions
-
-**Why Lucene + Qdrant instead of just one?**
-
-Lucene alone misses meaning. "Neural network limitations" won't match "shortcomings of deep learning architectures." Same idea, different words.
-
-Qdrant alone can't scan a million vectors on 1 GB RAM. The HNSW index graph would eat most of the memory budget. Brute-force over the full collection is too slow.
-
-Together: Lucene handles scale (1M → 1K), Qdrant handles understanding (1K → 10). Each does what it's best at.
-
-**Why is HNSW disabled?**
-
-HNSW builds a multi-layer graph in memory to speed up approximate nearest neighbor search. For 1M vectors at 384 dimensions, that graph consumes hundreds of megabytes — most of our RAM budget.
-
-But we're never searching the full collection. We're searching 1,000 pre-filtered candidates. Brute-force cosine similarity over 1,000 vectors takes ~20 ms. No index needed.
-
-**Why two separate services?**
-
-Java/Lucene is the gold standard for full-text search. Nothing in Python matches its BM25 implementation or indexing performance.
-
-Python has the best ML ecosystem — sentence-transformers, PyTorch, and clean LLM API integration.
-
-Keeping them separate means you can deploy, scale, and update them independently.
-
----
-
-## What This Project Does NOT Do
-
-No GPU required.
-No HNSW index.
-No approximate nearest neighbor.
-No hybrid search.
-No reranker models.
-No FAISS. No Elasticsearch. No Redis. No Pinecone.
-No re-chunking in Python.
-No 10 GB RAM requirement.
-
-Every omission is intentional. The constraints demanded it, and the two-stage architecture makes it work without them.
-
----
-
-## Tech Stack
-
-| Component | Technology | Why This |
-|-----------|-----------|----------|
-| Document engine | Java 17, Spring Boot, Lucene 9.11 | Best-in-class BM25, battle-tested inverted index |
-| Vector store | Qdrant (Docker) | Lightweight, brute-force mode, on-disk payloads |
-| Semantic search | Python 3.10+, FastAPI | Best ML ecosystem, async, clean API layer |
-| Embeddings | `BAAI/bge-small-en` (384 dim) | Small, fast on CPU, solid quality for its size |
-| Answers | Claude (Anthropic API) | Strong instruction-following, good at citing sources |
-| ML runtime | PyTorch (CPU build) | 115 MB vs 2 GB for CUDA — no contest on a tiny server |
-
----
-
-## Project Structure
-
-```
-production-rag/
-│
-├── lucene-service/                      # Java — PDF processing + keyword search
-│   ├── src/main/java/.../
-│   │   ├── controller/
-│   │   │   ├── PdfIngestionController   # Upload PDFs, track jobs, delete docs
-│   │   │   └── SearchController         # BM25 search with document filtering
-│   │   ├── service/
-│   │   │   ├── PdfIngestionService      # Text extraction via PDFBox
-│   │   │   ├── ChunkingService          # Overlap chunking + sentence alignment
-│   │   │   └── IngestionJobService      # Background job processing
-│   │   └── lucene/
-│   │       ├── LuceneIndexService       # Index management
-│   │       ├── LuceneSearchService      # BM25 scoring + filtering
-│   │       └── LuceneConfig             # Analyzer, stopwords, BM25 params
-│   ├── chunk-exports/                   # JSON output (auto-generated)
-│   └── pom.xml
-│
-├── rag-service/                         # Python — semantic reranking + answers
-│   ├── app/
-│   │   ├── config.py                    # All settings from one .env file
-│   │   ├── embedding.py                 # BGE model, query prefix, batched encoding
-│   │   ├── qdrant_store.py              # Collection setup, brute-force search
-│   │   ├── ingestion.py                 # Streaming JSON → embed → upsert
-│   │   ├── retriever.py                 # Query embed → filtered Qdrant search
-│   │   ├── generator.py                 # Prompt builder + Claude API
-│   │   └── main.py                      # FastAPI — /ask and /health
-│   ├── run_ingestion.py                 # Offline CLI for populating Qdrant
-│   ├── requirements.txt
-│   ├── .env / .env.example
-│   ├── README.md                        # ← You are here
-│   └── TECHNICAL.md                     # API reference, internals, deployment
-│
-├── qdrant_storage/                      # Qdrant persistent data
-└── Research-Paper-Downloder/            # arXiv paper downloader utility
+**Configuration** (in notebook):
+```python
+QDRANT_URL = "https://your-cloud-instance"
+QDRANT_API_KEY = "your-api-key"
+EMBEDDING_MODEL = "BAAI/bge-small-en"
+EMBEDDING_DIM = 384
+EMBED_BATCH_SIZE = 256
+UPSERT_BATCH_SIZE = 1000
+JSON_DIR = "./chunk-exports"
 ```
 
 ---
 
-## Quick Start
+## ⚙️ Configuration
+
+All settings in `.env`:
 
 ```bash
-# 1. Start the vector database
-docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
+# Claude API
+LLM_API_KEY=sk-ant-xxxxxxx
+LLM_MODEL=claude-3-5-sonnet-20241022
 
-# 2. Start the document engine (separate terminal)
-cd lucene-service && mvn spring-boot:run
+# Qdrant Vector DB
+QDRANT_URL=https://your-instance.eu-central-1-0.aws.cloud.qdrant.io:6333
+QDRANT_API_KEY=your-api-key
+QDRANT_COLLECTION=rag_chunks
 
-# 3. Feed it some PDFs
-curl -X POST http://localhost:8080/api/v1/ingest/pdf -F "file=@paper.pdf"
+# Lucene Service
+LUCENE_URL=http://localhost:8080
 
-# 4. Install Python dependencies (CPU-only torch first!)
-cd rag-service
-pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
+# Search parameters
+TOP_K_SEMANTIC=10          # Final chunks for Claude
+SIMILARITY_THRESHOLD=0.5   # Min similarity score
 
-# 5. Set your API key
-cp .env.example .env
-# Edit .env → set LLM_API_KEY=sk-ant-your-key-here
-
-# 6. Embed all chunks and store in Qdrant (offline, one-time)
-python run_ingestion.py
-
-# 7. Start the query server
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# 8. Ask something
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is attention mechanism?", "candidate_ids": ["id1", "id2"]}'
+# Ingestion
+EMBED_BATCH_SIZE=256
+UPSERT_BATCH_SIZE=1000
+MAX_CHUNK_TOKENS=512
 ```
 
-Detailed steps with expected output in [TECHNICAL.md](TECHNICAL.md).
+For detailed reference, see **[TECHNICAL.md](TECHNICAL.md)**.
 
 ---
 
-## Hardware Reality
+## 🔍 Workflow: End-to-End
 
-| Constraint | What We Did |
-|------------|-------------|
-| **1 GB RAM** | Disabled HNSW (`m=0`), payloads on disk, streaming JSON ingestion, GC after every batch, model uses ~200 MB leaving room for everything else |
-| **4 GB disk** | No graph index, no quantization tables, no snapshots, only 6 fields stored per chunk |
-| **No GPU** | PyTorch CPU build (115 MB), BGE-small is fast on CPU, one query embedding is instant |
-| **1M+ chunks** | Lucene shrinks the search space from 1M to 1K before Qdrant ever touches it |
+### **Setup Phase** (One-time)
+
+```bash
+# 1. Start services
+docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:latest
+cd lucene-service && mvn spring-boot:run &
+
+# 2. Upload PDFs to Lucene
+curl -X POST http://localhost:8080/api/v1/ingest/pdf \
+  -F "file=@paper1.pdf" \
+  -F "file=@paper2.pdf"
+
+# 3. Wait for Lucene to process & export JSON
+# Check: lucene-service/chunk-exports/*.json
+
+# 4. Embed chunks in Qdrant (on Colab or local)
+python run_ingestion.py
+# or upload ingestion-rag-pipeline.ipynb to Colab
+```
+
+### **Query Phase** (Runtime)
+
+```bash
+# 1. Start Python RAG service
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# 2. User asks a question
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is attention mechanism?"}'
+
+# 3. Service:
+#    a. Queries Lucene → gets 1000 candidate IDs
+#    b. Embeds query using BGE-small-en
+#    c. Searches Qdrant (only those 1000) → gets top 10
+#    d. Builds prompt from top 10 chunks
+#    e. Calls Claude
+#    f. Returns answer + sources
+```
 
 ---
 
-## What's Next
+## 💾 Data Flow
 
-For the full technical deep-dive, see **[TECHNICAL.md](TECHNICAL.md)**:
+```
+PDFs (lucene-service/*)
+  │
+  ▼
+Lucene Service (Java)
+  ├─ Extract text (PDFBox)
+  ├─ Split into chunks (overlapping, ~400 tokens)
+  ├─ Index with BM25
+  └─ Export JSON → chunk-exports/
+     │
+     ▼
+ingestion-rag-pipeline.ipynb (Colab)
+  ├─ Load JSON files
+  ├─ Sanitize text
+  ├─ Embed with BGE-small-en
+  ├─ Upsert to Qdrant
+  └─ Done!
+     │
+     ▼
+Qdrant Cloud (44,000+ vectors)
+  │
+  ▼
+Python RAG Service (FastAPI)
+  ├─ Receive query
+  ├─ Query Lucene (1M → 1K)
+  ├─ Embed query
+  ├─ Search Qdrant (1K → 10)
+  ├─ Build prompt
+  ├─ Call Claude
+  └─ Return answer + sources
+```
 
-- Complete API reference — every endpoint, every field, every status code
-- Chunk JSON format — exact schema from the Java export
-- Qdrant internals — why `m=0`, why `indexing_threshold=0`, why `exact=True`
-- Embedding pipeline — query prefix, normalization, batch mechanics
-- Ingestion pipeline — streaming parser, memory management, multi-file support
-- Prompt construction — the exact format Claude receives
-- Full configuration reference — every environment variable
-- Step-by-step deployment guide — with RAM breakdown
-- Troubleshooting — the 7 most common issues and how to fix them
+---
+
+## 🐛 Troubleshooting
+
+### **Embedding fails with "invalid UTF-8"**
+
+The notebook sanitizes text automatically:
+```python
+def sanitize_text(text: str) -> str:
+    text = text.replace("\x00", "")  # Remove NUL bytes
+    # Remove other control chars
+    cleaned = [
+        " " if ord(ch) < 32 and ch not in "\n\r\t" else ch
+        for ch in text
+    ]
+    return "".join(cleaned).strip()
+```
+
+If still failing, the notebook tells you exactly which text broke:
+```
+BROKEN TEXT FOUND
+Sub-index: 45
+Length: 2341
+Preview: "threshold 𝜕 = 10−2..."
+Error: ...tokenizer error...
+```
+
+### **Qdrant connection refused**
+
+Check if Qdrant is running:
+```bash
+curl http://localhost:6333/health
+# Should return: {"status":"ok"}
+```
+
+If using cloud:
+- Verify `QDRANT_URL` in `.env`
+- Check `QDRANT_API_KEY` is set correctly
+- Ensure IP is whitelisted (if cloud instance requires it)
+
+### **Claude API errors**
+
+Check your API key:
+```bash
+echo $LLM_API_KEY
+# Should start with sk-ant-
+```
+
+### **High latency on queries**
+
+- **Lucene slow?** Check if Java service has enough memory
+- **Qdrant slow?** Verify brute-force search is enabled (`exact=True`)
+- **Embedding slow?** Expected on CPU (~8 ms), normal
+
+---
+
+## 📖 Files Guide
+
+| File | Purpose |
+|------|---------|
+| **ingestion-rag-pipeline.ipynb** | Main notebook: embed chunks, store in Qdrant |
+| **run_ingestion.py** | CLI runner for ingestion (local) |
+| **run_ingestion_cloud.py** | Optimized for Google Colab |
+| **app/main.py** | FastAPI server - `/ask` endpoint |
+| **app/retriever.py** | Query embedding + Qdrant search |
+| **app/generator.py** | Claude answer generation |
+| **app/qdrant_store.py** | Vector DB operations |
+| **app/embedding.py** | BGE model loading + encoding |
+| **requirements.txt** | Python dependencies |
+| **README.md** | (you are here) |
+| **TECHNICAL.md** | Full API reference & internals |
+
+---
+
+## 🎓 Key Concepts
+
+### **Why Lucene + Qdrant?**
+
+| Stage | Why |
+|-------|-----|
+| **Lucene** | Keyword search is instant at scale. BM25 is unbeatable for full-text search. Shrinks 1M → 1K in ~15ms. |
+| **Qdrant** | Semantic search understands meaning. "Architecture limitations" matches "transformer shortcomings". But can't scale to 1M on 1 GB. |
+| **Together** | Lucene filters, Qdrant understands. Best of both worlds. |
+
+### **Why HNSW Disabled?**
+
+HNSW is a graph index for fast approximate nearest neighbor search. It uses ~100-200 MB per million vectors.
+
+On a 1 GB server, that's most of our memory budget.
+
+But we're never searching the full collection. We're searching 1,000 pre-filtered candidates. Brute-force cosine similarity over 1K vectors takes only ~20 ms. No index needed.
+
+### **Why BGE-small-en?**
+
+- **Size**: 33M parameters, 384 dimensions
+- **Speed**: Fast on CPU (~8 ms per query)
+- **Quality**: Solid performance for its size
+- **Model**: Specifically trained for semantic search (not generation)
+
+---
+
+## 📞 Quick Reference
+
+| Task | Command |
+|------|---------|
+| Install deps | `pip install -r requirements.txt` |
+| Start Qdrant | `docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:latest` |
+| Start Lucene | `cd lucene-service && mvn spring-boot:run` |
+| Run ingestion | `python run_ingestion.py` or notebook |
+| Start API | `uvicorn app.main:app --reload --port 8000` |
+| Test API | `curl http://localhost:8000/health` |
+| View logs | Check .env + FastAPI console output |
+| Debug embedding | Run notebook cell-by-cell, watch for sanitization errors |
+
+---
+
+## 📚 More Info
+
+**For technical details**, see **[TECHNICAL.md](TECHNICAL.md)**:
+- Complete API reference
+- Chunk JSON schema
+- Qdrant configuration internals
+- Embedding pipeline details
+- Prompt construction
+- Full deployment guide
+- Troubleshooting (common issues + fixes)
+
+---
+
+## ✅ Status
+
+- ✓ Ingestion pipeline (notebook + CLI)
+- ✓ Query API (FastAPI)
+- ✓ Qdrant integration (brute-force search)
+- ✓ Claude integration (grounded answers)
+- ✓ Citation tracking (sources per answer)
+- ✓ CPU-only deployment (no GPU needed)
+- ✓ Low memory footprint (1 GB server)
+- ✓ Production-ready
+
+**Ready to deploy!** 🚀
