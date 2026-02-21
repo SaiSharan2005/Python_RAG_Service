@@ -37,13 +37,16 @@ def get_client() -> QdrantClient:
     global _client
     if _client is None:
         if settings.qdrant_url:
+            log.info("Using Qdrant Cloud: %s", settings.qdrant_url)
             _client = QdrantClient(
                 url=settings.qdrant_url,
                 api_key=settings.qdrant_api_key or None,
                 timeout=120,
             )
-            log.info("Connected to Qdrant Cloud at %s", settings.qdrant_url)
+            log.info("Successfully connected to Qdrant Cloud!")
         else:
+            log.warning("WARNING: QDRANT_URL not set! Falling back to localhost (this will fail if Qdrant is not running locally)")
+            log.info("To use cloud Qdrant, set ENV=prod before running")
             _client = QdrantClient(
                 host=settings.qdrant_host,
                 port=settings.qdrant_port,

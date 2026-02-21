@@ -3,17 +3,34 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Pick .env file: set ENV=prod to load .env.prod, otherwise .env
+# Determine which .env file to use
 _env_mode = os.getenv("ENV", "").strip().lower()
 _env_file = f".env.{_env_mode}" if _env_mode else ".env"
+
+# Get the directory of this file
+_config_dir = Path(__file__).parent.parent
+
+# Explicitly load the .env file using python-dotenv
+_env_path = _config_dir / _env_file
+print(f"[CONFIG] ENV mode: {_env_mode if _env_mode else 'default (development)'}")
+print(f"[CONFIG] Loading: {_env_path}")
+print(f"[CONFIG] File exists: {_env_path.exists()}")
+
+if _env_path.exists():
+    load_dotenv(_env_path, override=True)
+    print(f"[CONFIG] Successfully loaded {_env_file}")
+else:
+    print(f"[CONFIG] WARNING: {_env_file} not found, using defaults")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=_env_file,
+        env_file=str(_env_path),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -42,11 +59,17 @@ class Settings(BaseSettings):
 
     # Server
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8081
     log_level: str = "info"
 
 
 settings = Settings()
+
+# Log the loaded settings
+print(f"[CONFIG] Qdrant URL: {settings.qdrant_url if settings.qdrant_url else 'NOT SET (using localhost)'}")
+print(f"[CONFIG] Qdrant Host: {settings.qdrant_host}")
+print(f"[CONFIG] Qdrant Port: {settings.qdrant_port}")
+print(f"[CONFIG] Qdrant Collection: {settings.qdrant_collection}")
 
 
 def setup_logging() -> logging.Logger:

@@ -22,6 +22,8 @@ def build_context(chunks: List[RetrievedChunk]) -> str:
     parts: List[str] = []
     for i, c in enumerate(chunks, 1):
         header = f"[{i}] Source: {c.source} | Title: {c.title} | Page: {c.page_number}"
+        if c.author:
+            header += f" | Author: {c.author}"
         parts.append(f"{header}\n{c.content}")
     return "\n\n---\n\n".join(parts)
 
@@ -34,17 +36,24 @@ def build_sources(chunks: List[RetrievedChunk]) -> List[Dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        sources.append(
-            {
-                "id": c.id,
-                "source": c.source,
-                "title": c.title,
-                "page_number": c.page_number,
-                "chunk_index": c.chunk_index,
-                "document_id": c.document_id,
-                "score": round(c.score, 4),
-            }
-        )
+        source_entry: Dict[str, Any] = {
+            "id": c.id,
+            "source": c.source,
+            "title": c.title,
+            "page_number": c.page_number,
+            "chunk_index": c.chunk_index,
+            "document_id": c.document_id,
+            "score": round(c.score, 4),
+        }
+        # Add optional metadata fields if available
+        if c.author:
+            source_entry["author"] = c.author
+        if c.chunk_position:
+            source_entry["chunk_position"] = c.chunk_position
+        # token_count is critical for context window management in LLM calls
+        if c.token_count:
+            source_entry["token_count"] = c.token_count
+        sources.append(source_entry)
     return sources
 
 

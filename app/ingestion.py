@@ -117,10 +117,14 @@ def _read_chunks(f, chunk_size: int = 64 * 1024) -> Generator[str, None, None]:
 
 
 def _build_payload(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract minimal payload to store alongside the vector.
+    """Extract metadata payload to store alongside the vector.
 
-    Only fields required for response construction are kept.
-    No redundant or full-metadata fields are stored.
+    Stores all essential metadata fields for response construction and context:
+    - Document identification (chunk_id, document_id)
+    - Content (content)
+    - Document metadata (source, title, author)
+    - Positional metadata (page_number, chunk_index, chunk_position)
+    - Statistics (token_count)
     """
     metadata = record.get("metadata", {})
     return {
@@ -128,8 +132,11 @@ def _build_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         "content": record.get("content", ""),
         "source": metadata.get("source", ""),
         "title": metadata.get("title", ""),
+        "author": metadata.get("author", ""),
         "page_number": metadata.get("page_number"),
         "chunk_index": metadata.get("chunk_index"),
+        "chunk_position": metadata.get("chunk_position"),
+        "token_count": metadata.get("token_count"),
         "document_id": record.get("document_id", ""),
     }
 

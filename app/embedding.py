@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import os
+from pathlib import Path
 from typing import List
 
 import torch
@@ -12,14 +14,29 @@ _model: SentenceTransformer | None = None
 
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
+# Cache models locally to avoid re-downloading
+MODELS_CACHE_DIR = Path(__file__).parent.parent / ".model_cache"
+
 
 def get_model() -> SentenceTransformer:
     global _model
     if _model is None:
         log.info("Loading embedding model: %s", settings.embedding_model)
+
+        # Create cache directory if it doesn't exist
+        MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Set HuggingFace cache to local directory
+        os.environ["HF_HOME"] = str(MODELS_CACHE_DIR)
+        os.environ["TRANSFORMERS_CACHE"] = str(MODELS_CACHE_DIR)
+        os.environ["SENTENCE_TRANSFORMERS_HOME"] = str(MODELS_CACHE_DIR)
+
+        log.info("Model cache directory: %s", MODELS_CACHE_DIR)
+
         _model = SentenceTransformer(
             settings.embedding_model,
             device="cpu",
+            cache_folder=str(MODELS_CACHE_DIR),
         )
         _model.eval()
         log.info("Embedding model loaded.")
