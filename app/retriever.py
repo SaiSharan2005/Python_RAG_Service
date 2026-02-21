@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+import heapq
 
 from app.config import log
 from app.embedding import embed_query
@@ -158,12 +159,15 @@ def retrieve_with_bm25_scores(
         search_params=SearchParams(
             exact=True,  # HNSW was disabled during ingestion, so use exact search
         ),
-        limit=len(chunk_ids),  # Get all candidates
+        limit=top_k,  # ⚡ OPTIMIZATION: Only get top K by cosine, not all candidates
         with_payload=True,
         with_vectors=False,
     )
     qdrant_search_time = (time.time() - qdrant_search_start) * 1000
-    log.info("  ├─ Qdrant search: %.2f ms (returned %d hits)", qdrant_search_time, len(qdrant_results))
+    log.info(
+        "  ├─ Qdrant search: %.2f ms (returned %d hits, filtered from %d candidates)",
+        qdrant_search_time, len(qdrant_results), len(chunk_ids)
+    )
 
     step2_time = (time.time() - step2_start) * 1000
     log.info("✅ Step 2 (Query Qdrant): %.2f ms (embed: %.2f + search: %.2f)", step2_time, embed_time, qdrant_search_time)
@@ -238,20 +242,20 @@ def retrieve_with_bm25_scores(
 
     # Step 4: Sort by combined score (descending) and return top K
     step4_start = time.time()
-    results.sort(key=lambda x: x["combined_score"], reverse=True)
-    top_results = results[:top_k]
+    top_results = heapq.nlargest(top_k, results, key=lambda x: x["combined_score"])
     step4_time = (time.time() - step4_start) * 1000
     log.info("✅ Step 4 (Sort & filter): %.2f ms", step4_time)
 
     total_time = (time.time() - total_start) * 1000
+    optimization_note = f"[OPTIMIZED: limit=top_k instead of all {len(chunk_ids)}, using heapq]" if len(chunk_ids) > top_k else ""
     log.info(
-        "🎉 HYBRID SEARCH COMPLETE\n"
+        "🎉 HYBRID SEARCH COMPLETE %s\n"
         "   ├─ Normalize BM25: %.2f ms\n"
-        "   ├─ Query Qdrant: %.2f ms (search: %.2f ms)\n"
+        "   ├─ Query Qdrant: %.2f ms (search: %.2f ms, cosine scored: %d)\n"
         "   ├─ Build results: %.2f ms\n"
         "   ├─ Sort & filter: %.2f ms\n"
         "   └─ TOTAL: %.2f ms (returned %d/%d results)",
-        step1_time, step2_time, qdrant_search_time, step3_time, step4_time, total_time, len(top_results), len(results)
+        optimization_note, step1_time, step2_time, qdrant_search_time, len(qdrant_results), step3_time, step4_time, total_time, len(top_results), len(results)
     )
 
     return top_results
