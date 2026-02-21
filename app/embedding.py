@@ -11,6 +11,7 @@ from sentence_transformers import SentenceTransformer
 from app.config import log, settings
 
 _model: SentenceTransformer | None = None
+_query_embedding_cache: dict[str, List[float]] = {}  # ⚡ Cache query embeddings
 
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -33,13 +34,20 @@ def get_model() -> SentenceTransformer:
 
         log.info("Model cache directory: %s", MODELS_CACHE_DIR)
 
+        # ⚡ Auto-detect device: GPU if available, otherwise CPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            log.info("🚀 GPU detected! Using CUDA for embeddings (10-20x faster)")
+        else:
+            log.warning("⚠️  No GPU detected. Using CPU (slow: ~1000ms per query)")
+
         _model = SentenceTransformer(
             settings.embedding_model,
-            device="cpu",
+            device=device,
             cache_folder=str(MODELS_CACHE_DIR),
         )
         _model.eval()
-        log.info("Embedding model loaded.")
+        log.info("Embedding model loaded on device: %s", device)
     return _model
 
 
@@ -68,5 +76,15 @@ def embed_texts(texts: List[str], is_query: bool = False) -> List[List[float]]:
 
 
 def embed_query(query: str) -> List[float]:
-    """Embed a single query string."""
-    return embed_texts([query], is_query=True)[0]
+    """Embed a single query string with caching."""
+    # ⚡ Check cache first (huge speedup for repeated queries)
+    if query in _query_embedding_cache:
+        return _query_embedding_cache[query]
+
+    # Not in cache, embed it
+    embedding = embed_texts([query], is_query=True)[0]
+
+    # Store in cache for next time
+    _query_embedding_cache[query] = embedding
+
+    return embedding
